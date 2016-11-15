@@ -1,0 +1,51 @@
+---
+title: "Titanic Dataset"
+output: html_notebook
+---
+
+
+```{r setup, include=FALSE}
+packages <- c("ggplot2", "tidyr", "dplyr", "readr", "GGally", "broom")
+new_packages = newPackages <- packages[!(packages %in% as.character(installed.packages()[,"Package"]))]
+if(length(newPackages)) install.packages(newPackages)
+lapply(packages,require,character.only=T)
+
+theme_set(theme_minimal())
+```
+
+# Titanic Competition: Kaggle
+
+The objective is to use supervised classifier algorithms to determine a binary outcome. The data is the titanic dataset, information on passenges who embarked on the famous journey from Southampton (UK) to Cherbourg (France) to Queenstown (Ireland) with the final destination New York. 1502 out of 2224 passengers died. We aim to predict which passengers are most likely to die, given the information we have in the dataset.
+
+## Exploratory Analysis
+
+First produce scatter plots to see how each independent variable is related to the dependent variable.
+
+```{r, echo=FALSE}
+train = read_csv("~/Downloads/train.csv")
+
+train %>% 
+  select(-Name, -PassengerId) %>%
+  gather(key, value, -Survived) %>%
+  ggplot(aes(x = value, y = Survived)) + 
+  geom_jitter() +
+  facet_wrap(~key, scales = "free")
+```
+
+## Logistic Regression
+
+The simplest model is a logistic regression model, let's make a model with just Sex.
+
+```{r}
+logistic_fit = glm(Survived ~ Sex, data = train, family = "binomial")
+tidy(logistic_fit)
+```
+Now we have an equation for the simple logistic regression model, we can test it using the test set and determine a measure of accuracy:
+
+```{r}
+test = read_csv("~/Downloads/test.csv")
+
+train %>%
+  add_predictions(logistic_fit)
+```
+
