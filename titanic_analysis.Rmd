@@ -5,7 +5,7 @@ output: html_notebook
 
 
 ```{r setup, include=FALSE}
-packages <- c("ggplot2", "tidyr", "dplyr", "readr", "GGally", "broom")
+packages <- c("tidyverse", "GGally", "broom", "modelr")
 new_packages = newPackages <- packages[!(packages %in% as.character(installed.packages()[,"Package"]))]
 if(length(newPackages)) install.packages(newPackages)
 lapply(packages,require,character.only=T)
@@ -24,6 +24,9 @@ First produce scatter plots to see how each independent variable is related to t
 ```{r, echo=FALSE}
 train = read_csv("~/Downloads/train.csv")
 
+train$Sex = as.factor(train$Sex)
+train$Survived = as.factor(train$Survived)
+
 train %>% 
   select(-Name, -PassengerId) %>%
   gather(key, value, -Survived) %>%
@@ -34,18 +37,62 @@ train %>%
 
 ## Logistic Regression
 
+We should first split the training set into 80% training and 20% test:
+
+```{r}
+## Selects a random 80% sample of the training set
+indices = sample(nrow(train), replace = FALSE, size = floor(nrow(train) * 0.8))
+training_split = train[indices,]
+test_split = train[-indices,]
+```
+
+
 The simplest model is a logistic regression model, let's make a model with just Sex.
 
 ```{r}
-logistic_fit = glm(Survived ~ Sex, data = train, family = "binomial")
+logistic_fit = glm(Survived ~ Sex, data = training_split, family = "binomial")
 tidy(logistic_fit)
 ```
-Now we have an equation for the simple logistic regression model, we can test it using the test set and determine a measure of accuracy:
+Now we have an equation for the simple logistic regression model
 
 ```{r}
-test = read_csv("~/Downloads/test.csv")
-
-train %>%
-  add_predictions(logistic_fit)
+## attempt at using modelr, need to transform using the linking function "logit" to transform the log-odds to the probability of survival
+survived = test_split %>%
+  select(Sex, Survived, PassengerId) %>%
+  add_predictions(logistic_fit) %>%
+  mutate(pred_survived = make.link("logit")$linkinv(pred))
 ```
+Now we can calculate an accuracy on the test set using the simple logistic regression model:
+
+```{r}
+survived %>% 
+  mutate(pred_survived = ifelse(pred_survived > 0.5, 1, 0)) %>%
+  summarise(accuracy = 1 - mean(Survived != pred_survived))
+```
+
+79.8% accuracy with only one predictor. 
+
+Abstract this into a function:
+
+```{r}
+accuracy_logistic = function(test, model) {
+  test %>%
+    na.omit() %>%
+    add_predictions(model) %>%
+    mutate(pred_survived = ifelse(make.link("logit")$linkinv(pred) > 0.5, 1, 0)) %>%
+    summarise(accuracy = 1 - mean(Survived != pred_survived))
+}
+```
+
+
+Let's add some more variables to the model:
+
+```{r}
+logistic_fit_2 = glm(Survived ~ Sex + Age + Pclass, data = training_split %>% na.omit(), family = binomial(link='logit'))
+accuracy_logistic(test_split, logistic_fit_2)
+```
+83%...
+
+## Random Forest
+
 
