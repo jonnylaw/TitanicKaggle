@@ -5,7 +5,7 @@ output: html_notebook
 
 
 ```{r setup, include=FALSE}
-packages <- c("tidyverse", "GGally", "broom", "modelr")
+packages <- c("tidyverse", "GGally", "broom", "modelr", "magrittr", "glmnet")
 new_packages = newPackages <- packages[!(packages %in% as.character(installed.packages()[,"Package"]))]
 if(length(newPackages)) install.packages(newPackages)
 lapply(packages,require,character.only=T)
@@ -19,7 +19,7 @@ The objective is to use supervised classifier algorithms to determine a binary o
 
 ## Exploratory Analysis
 
-First produce scatter plots to see how each independent variable is related to the dependent variable.
+First produce bar plots to see how each independent variable is related to the dependent variable.
 
 ```{r, echo=FALSE}
 train = read_csv("~/Downloads/train.csv")
@@ -28,11 +28,86 @@ train$Sex = as.factor(train$Sex)
 train$Survived = as.factor(train$Survived)
 
 train %>% 
-  select(-Name, -PassengerId) %>%
+  select(Sex, SibSp, Pclass, Survived) %>%
   gather(key, value, -Survived) %>%
-  ggplot(aes(x = value, y = Survived)) + 
-  geom_jitter() +
+  ggplot(aes(x = value, fill = Survived)) + 
+  geom_bar(position = "dodge") +
   facet_wrap(~key, scales = "free")
+```
+
+From the figure, we can see that small families are more likely to survive than those with no siblings or spouses, SibSp is the number of siblings and spouses. Females are more likely than males to survive and the higher classes are more likely to survive.
+
+## Feature Engineering
+
+Feature engineering is the process of creating new independent variables from the existing variables. Ethnicity can be predicted from names, also titles can be used to status of the passengers. First extract the title of the passengers, test the code on a single name formatted as in the training data
+
+```{r}
+name = "Smith, Mr. John"
+stringr::str_split(name, pattern = ",|\\.")[[1]][2] %>% 
+  stringr::str_trim()
+```
+
+Now let's use the `rowwise` function in `dplyr` to apply the string match to each name in the training dataset.
+
+```{r}
+train %<>%
+  rowwise() %>%
+  mutate(Title = stringr::str_split(Name, pattern = ",|\\.")[[1]][2] %>% 
+  stringr::str_trim())
+```
+
+Look at the distinct titles:
+
+```{r}
+train %>% select(Title) %>% distinct()
+```
+There are 17 distinct titles, we should group them up. There are some which are highly regarded titles, and some which are simply translations of other titles.
+
+```{r}
+## I don't include Capt. because I know a-priori that the captain goes down with his ship!
+special = c("Don", "Major", "Lady", "Sir", "Col", "the Countess", "Jonkheer")
+
+train %<>% 
+  mutate(special_title = ifelse(Title %in% special, TRUE, FALSE))
+
+train %>%
+  ggplot(aes(x = special_title, fill = Survived)) + 
+  geom_bar(position = "dodge") + 
+  facet_wrap(~special_title, scales = "free") +
+  ggtitle("Survival Chance with Special Title")
+```
+
+Let's query an API to determine the ethnicity of the passengers, the Api requires the name "Smith, Mr. John" to be formatted "John Smith".
+
+```{r, eval=FALSE}
+name = train[1,]$Name
+format_name = function(name) {
+  full = stringr::str_split(name, pattern = ",|\\.") %>% unlist()
+  first = full[3]
+  last = full[1]
+  paste(first, last) %>% stringr::str_trim()
+}
+
+# httr::POST(url = "www.textmap.com/ethnicity_api/api", body = jsonlite::toJSON(format_name(name)))
+```
+Does age affect surviving linearly, I think children (age < 18) will be more likely to survive, so let's make a child variable.
+
+```{r}
+train %>%
+  mutate(child = ifelse(Age < 18, TRUE, FALSE))
+```
+
+
+## Missingness
+
+One way of dealing with missing data is to simply omit rows with missing data, currently the training set has `r nrow(train)` observations and with the missing observations we are left with `r nrow(na.omit(train))`. This is a very small proportion of the original data, so we must consider an imputation method.
+
+We can impute missing values by using a summary from the same column, for instance the mode or the mean. Or we can use a more sophisticated imputation technique taking into account other variables present for that observation. 
+
+### Expectation-Maximisation
+
+```{r}
+
 ```
 
 ## Logistic Regression
@@ -45,7 +120,6 @@ indices = sample(nrow(train), replace = FALSE, size = floor(nrow(train) * 0.8))
 training_split = train[indices,]
 test_split = train[-indices,]
 ```
-
 
 The simplest model is a logistic regression model, let's make a model with just Sex.
 
@@ -70,8 +144,6 @@ survived %>%
   summarise(accuracy = 1 - mean(Survived != pred_survived))
 ```
 
-79.8% accuracy with only one predictor. 
-
 Abstract this into a function:
 
 ```{r}
@@ -84,14 +156,49 @@ accuracy_logistic = function(test, model) {
 }
 ```
 
-
 Let's add some more variables to the model:
 
 ```{r}
 logistic_fit_2 = glm(Survived ~ Sex + Age + Pclass, data = training_split %>% na.omit(), family = binomial(link='logit'))
 accuracy_logistic(test_split, logistic_fit_2)
 ```
-83%...
+86.4%...
+
+### K-fold cross validation with modelr
+
+Using `crossv_kfold`, we can specify k training and test splits which are exclusive. ie. The test data used is different in each fold. This means we can test our model accuracy by training and fitting it k times on different data splits. This ensures the model hasn't overfit to the data.
+
+```{r}
+k_fold = crossv_kfold(data = train, k = 10)
+
+## 
+build_model = function(training) {
+  glm(Survived ~ Sex + Age + Pclass, data = training %>% as.data.frame() %>% na.omit(), family = binomial)
+}
+
+models = lapply(k_fold$train, build_model)
+
+accuracy_logistic = function(test, model) {
+  test %>%
+    as.data.frame() %>%
+    na.omit() %>%
+    add_predictions(model) %>%
+    mutate(pred_survived = ifelse(make.link("logit")$linkinv(pred) > 0.5, 1, 0)) %>%
+    summarise(accuracy = 1 - mean(Survived != pred_survived))
+}
+
+mapply(accuracy_logistic, k_fold$test, models)
+```
+
+Note here, the accuracy varies at each training / test split. Could this be a sign of overfitting
+
+## Using glmnet to fit penalized logistic regression
+
+`glmnet` is an r package which fits lasso and ridge regression. The former chooses which predictors should be in or out of the model, whereas ridge regression shrinks coefficients in an attempt to create a model which does not overfit to the data.
+
+```{r}
+cv.glmnet(model.matrix(Survived ~ Sex + Age + SibSp + Embarked + Title + Pclass + Cabin, train), train[,2], parallel = TRUE, family = "binomial")
+```
 
 ## Random Forest
 
